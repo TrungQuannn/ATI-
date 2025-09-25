@@ -1,29 +1,41 @@
-from google.colab import drive
-drive.mount('/content/drive')
-
-import pandas as pd
+# ================== IMPORT LIBRARIES ==================
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler, LabelEncoder
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score, confusion_matrix, classification_report
 
-df = pd.read_csv('/content/drive/MyDrive/ccpp.csv')
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn import metrics
+
+from tensorflow.keras.models import Sequential, load_model
+from tensorflow.keras.layers import Dense, Dropout
+from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
+
+# ================== LOAD DATA ==================
+df = pd.read_csv("/mnt/data/ccpp.csv")
+
+# Rename columns
+df.rename(columns={
+    'AT': 'Average Temperature',
+    'V': 'Exhaust Vacuum',
+    'AP': 'Ambient Pressure',
+    'RH': 'Relative Humidity',
+    'PE': 'Net Hourly Electrical Energy Output'
+}, inplace=True)
 
 print(df.head())
 print(df.info())
-print(df.describe())
-print(df.isnull().sum())
 
-for col in df.select_dtypes(include=['object']).columns:
-    df[col] = LabelEncoder().fit_transform(df[col].astype(str))
+# ================== DATA EXPLORATION ==================
+plt.figure(figsize=(8,6))
+sns.heatmap(df.corr(), annot=True, cmap="coolwarm", fmt=".2f", linewidths=0.5)
+plt.title("Correlation Heatmap")
+plt.show()
 
-df = df.fillna(df.median())
-
-X = df.drop('target', axis=1)
-y = df['target']
+# ================== PREPARE DATA ==================
+X = df.drop("Net Hourly Electrical Energy Output", axis=1).values
+y = df["Net Hourly Electrical Energy Output"].values
 
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
@@ -31,19 +43,67 @@ scaler = StandardScaler()
 X_train = scaler.fit_transform(X_train)
 X_test = scaler.transform(X_test)
 
-model = LogisticRegression(max_iter=1000)
-model.fit(X_train, y_train)
+print("Train shape:", X_train.shape, y_train.shape)
+print("Test shape:", X_test.shape, y_test.shape)
 
-y_pred = model.predict(X_test)
+# ================== BUILD MODEL ==================
+def build_model():
+    model = Sequential()
+    model.add(Dense(64, activation='relu', input_shape=(X_train.shape[1],)))
+    model.add(Dropout(0.2))
+    model.add(Dense(32, activation='relu'))
+    model.add(Dense(16, activation='relu'))
+    model.add(Dense(1))  # regression output
+    return model
 
-print("Accuracy:", accuracy_score(y_test, y_pred))
-print(classification_report(y_test, y_pred))
+model = build_model()
+model.compile(optimizer='adam', loss='mse', metrics=['mae'])
 
-cm = confusion_matrix(y_test, y_pred)
-sns.heatmap(cm, annot=True, fmt="d", cmap="Blues")
-plt.xlabel("Predicted")
-plt.ylabel("Actual")
+# Callbacks
+early_stop = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
+checkpoint = ModelCheckpoint("best_model.keras", save_best_only=True, monitor='val_loss')
+reduce_lr = ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=5, verbose=1)
+
+# Train
+history = model.fit(
+    X_train, y_train,
+    validation_data=(X_test, y_test),
+    epochs=200,
+    batch_size=32,
+    callbacks=[early_stop, checkpoint, reduce_lr],
+    verbose=1
+)
+
+# ================== PLOT LEARNING CURVE ==================
+plt.figure(figsize=(12,6))
+plt.plot(history.history["loss"], label="Train Loss")
+plt.plot(history.history["val_loss"], label="Validation Loss")
+plt.xlabel("Epochs")
+plt.ylabel("MSE Loss")
+plt.title("Training and Validation Loss")
+plt.legend()
 plt.show()
 
+# ================== EVALUATE MODEL ==================
+predictions = model.predict(X_test)
+
+plt.figure(figsize=(10,8))
+sns.scatterplot(x=y_test, y=predictions.flatten(), alpha=0.6)
+plt.plot([y_test.min(), y_test.max()], [y_test.min(), y_test.max()], color="red", lw=2)
+plt.xlabel("Actual Energy Output")
+plt.ylabel("Predicted Energy Output")
+plt.title("Predicted vs Actual")
+plt.show()
+
+print("MAE:", metrics.mean_absolute_error(y_test, predictions))
+print("MSE:", metrics.mean_squared_error(y_test, predictions))
+print("RMSE:", np.sqrt(metrics.mean_squared_error(y_test, predictions)))
+print("R² Score:", metrics.r2_score(y_test, predictions))
+
+# ================== SAVE & LOAD MODEL ==================
+model.save("final_ccpp_model.keras")
+loaded_model = load_model("final_ccpp_model.keras")
+
 sample = X_test[0].reshape(1, -1)
-print("Sample prediction:", model.predict(sample))
+print("Sample Prediction:", loaded_model.predict(sample))
+print("Actual:", y_test[0])
